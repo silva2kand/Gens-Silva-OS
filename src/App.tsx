@@ -16,6 +16,7 @@ import KnowledgeView from '@/components/knowledge/KnowledgeView'
 import ChannelsView from '@/components/channels/ChannelsView'
 import ScheduledTasksView from '@/components/scheduled/ScheduledTasksView'
 import ConnectorsView from '@/components/Connectors/ConnectorsView'
+import LiveAgentSidebar from '@/components/live-agent/LiveAgentSidebar'
 
 function App() {
   const { currentView, theme } = useAppStore()
@@ -98,6 +99,7 @@ function App() {
       <main className="flex-1 overflow-hidden">
         {renderView()}
       </main>
+      <LiveAgentSidebar />
       <CommandPalette />
     </div>
   )
