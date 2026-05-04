@@ -13,6 +13,8 @@ import {
   List,
   Loader2,
   Pause,
+  Pin,
+  PinOff,
   RefreshCw,
   RotateCcw,
   Square,
@@ -49,6 +51,9 @@ type RunSummary = {
   progress: number
   requiresApproval: boolean
   priority: 'low' | 'normal' | 'urgent'
+  emailCount: number | null
+  currentStage: string
+  pinned: boolean
   events: RunTimelineEvent[]
 }
 
@@ -98,6 +103,13 @@ export default function LiveAgentSidebar() {
   const [replayLogOpen, setReplayLogOpen] = useState(false)
   const [replayLog, setReplayLog] = useState<ReplayLogEntry[]>([])
   const [lastSpokenApprovalId, setLastSpokenApprovalId] = useState('')
+  const [pinnedRunIds, setPinnedRunIds] = useState<string[]>(() => {
+    try {
+      return JSON.parse(localStorage.getItem('gsos.liveAgentSidebar.pinnedRuns') || '[]')
+    } catch {
+      return []
+    }
+  })
 
   const loadTimeline = useCallback(async () => {
     try {
@@ -131,7 +143,11 @@ export default function LiveAgentSidebar() {
     localStorage.setItem('gsos.liveAgentSidebar.collapsed', String(collapsed))
   }, [collapsed])
 
-  const runs = useMemo(() => summarizeRuns(events), [events])
+  useEffect(() => {
+    localStorage.setItem('gsos.liveAgentSidebar.pinnedRuns', JSON.stringify(pinnedRunIds))
+  }, [pinnedRunIds])
+
+  const runs = useMemo(() => summarizeRuns(events, pinnedRunIds), [events, pinnedRunIds])
   const agents = useMemo(() => {
     const names = Array.from(new Set(runs.map((run) => run.agent).filter(Boolean)))
     return names.sort((a, b) => a.localeCompare(b))
@@ -141,11 +157,12 @@ export default function LiveAgentSidebar() {
     const matchesAgent = agentFilter === 'all' || run.agent === agentFilter
     const matchesActive = !showOnlyActive || activeStatuses.includes(run.status)
     return matchesAgent && matchesActive
-  }), [agentFilter, runs, showOnlyActive])
+  }).sort((a, b) => Number(b.pinned) - Number(a.pinned) || new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime()), [agentFilter, runs, showOnlyActive])
 
   const activeRuns = filteredRuns.filter((run) => run.status === 'running')
   const backgroundRuns = filteredRuns.filter((run) => isBackgroundRun(run) && activeStatuses.includes(run.status))
   const approvals = filteredRuns.filter((run) => run.requiresApproval || run.status === 'waiting_approval')
+  const pinnedRuns = filteredRuns.filter((run) => run.pinned).slice(0, 8)
   const completed = filteredRuns.filter((run) => run.status === 'completed').slice(0, 8)
   const warnings = filteredRuns.filter((run) => run.status === 'failed' || run.status === 'warning').slice(0, 8)
   const selectedRun = runs.find((run) => run.runId === selectedRunId) || null
@@ -167,20 +184,23 @@ export default function LiveAgentSidebar() {
     }
   }
 
+  const togglePinned = (runId: string) => {
+    setPinnedRunIds((current) => (
+      current.includes(runId)
+        ? current.filter((id) => id !== runId)
+        : [runId, ...current].slice(0, 20)
+    ))
+  }
+
   const recordControlEvent = async (run: RunSummary, status: RunStatus, title: string, text: string) => {
     const actionKey = `${run.runId}:${status}`
     setBusyAction(actionKey)
     try {
-      await invoke('add_run_timeline_event', {
+      await invoke('request_agent_run_control', {
         runId: run.runId,
-        eventType: `control_${status}`,
-        source: 'live_agent_sidebar',
-        agent: run.agent,
-        title,
-        text,
-        status,
-        requiresApproval: false,
-        metadata: { controlledFrom: 'right_sidebar', priority: run.priority },
+        agentId: agentIdFromRun(run),
+        action: status === 'stopped' ? 'cancel' : status === 'paused' ? 'pause' : 'resume',
+        goal: run.events[run.events.length - 1]?.metadata?.goal || run.title || text,
       })
       await loadTimeline()
     } catch (error) {
@@ -285,6 +305,7 @@ export default function LiveAgentSidebar() {
         <div className="mt-4 flex flex-col items-center gap-3">
           <SidebarRailCount label="Active runs" count={runs.filter((run) => activeStatuses.includes(run.status)).length} tone="blue" />
           <SidebarRailCount label="Approvals" count={approvals.length} tone="amber" />
+          <SidebarRailCount label="Pinned" count={pinnedRunIds.length} tone="blue" />
           <SidebarRailCount label="Warnings" count={warnings.length} tone="red" />
         </div>
       </aside>
@@ -360,6 +381,7 @@ export default function LiveAgentSidebar() {
             run={selectedRun}
             busyAction={busyAction}
             onBack={() => setSelectedRunId(null)}
+            onTogglePinned={() => togglePinned(selectedRun.runId)}
             onPause={() => recordControlEvent(selectedRun, 'paused', 'Run paused', 'User paused this run from the Live Agent Sidebar.')}
             onResume={() => recordControlEvent(selectedRun, 'running', 'Run resumed', 'User resumed this paused run from the Live Agent Sidebar.')}
             onStop={() => recordControlEvent(selectedRun, 'stopped', 'Run stopped', 'User stopped this run from the Live Agent Sidebar.')}
@@ -370,6 +392,12 @@ export default function LiveAgentSidebar() {
           />
         ) : (
           <>
+            <RunSection title="Pinned Runs" count={pinnedRuns.length} empty="No pinned runs yet.">
+              {pinnedRuns.map((run) => (
+                <CompactRunRow key={run.runId} run={run} onOpen={() => setSelectedRunId(run.runId)} onTogglePinned={() => togglePinned(run.runId)} />
+              ))}
+            </RunSection>
+
             <RunSection title="Active Runs" count={activeRuns.length} empty="No active agent runs.">
               {activeRuns.map((run) => (
                 <RunCard
@@ -377,6 +405,7 @@ export default function LiveAgentSidebar() {
                   run={run}
                   busyAction={busyAction}
                   onOpen={() => setSelectedRunId(run.runId)}
+                  onTogglePinned={() => togglePinned(run.runId)}
                   onPause={() => recordControlEvent(run, 'paused', 'Run paused', 'User paused this run from the Live Agent Sidebar.')}
                   onResume={() => recordControlEvent(run, 'running', 'Run resumed', 'User resumed this paused run from the Live Agent Sidebar.')}
                   onStop={() => recordControlEvent(run, 'stopped', 'Run stopped', 'User stopped this run from the Live Agent Sidebar.')}
@@ -391,6 +420,7 @@ export default function LiveAgentSidebar() {
                   run={run}
                   busyAction={busyAction}
                   onOpen={() => setSelectedRunId(run.runId)}
+                  onTogglePinned={() => togglePinned(run.runId)}
                   onPause={() => recordControlEvent(run, 'paused', 'Run paused', 'User paused this background task.')}
                   onResume={() => recordControlEvent(run, 'running', 'Run resumed', 'User resumed this background task.')}
                   onStop={() => recordControlEvent(run, 'stopped', 'Run stopped', 'User stopped this background task.')}
@@ -414,13 +444,13 @@ export default function LiveAgentSidebar() {
 
             <RunSection title="Recent Completed" count={completed.length} empty="No completed runs yet.">
               {completed.map((run) => (
-                <CompactRunRow key={run.runId} run={run} onOpen={() => setSelectedRunId(run.runId)} />
+                <CompactRunRow key={run.runId} run={run} onOpen={() => setSelectedRunId(run.runId)} onTogglePinned={() => togglePinned(run.runId)} />
               ))}
             </RunSection>
 
             <RunSection title="Errors / Warnings" count={warnings.length} empty="No errors or warnings.">
               {warnings.map((run) => (
-                <CompactRunRow key={run.runId} run={run} onOpen={() => setSelectedRunId(run.runId)} />
+                <CompactRunRow key={run.runId} run={run} onOpen={() => setSelectedRunId(run.runId)} onTogglePinned={() => togglePinned(run.runId)} />
               ))}
             </RunSection>
           </>
@@ -467,6 +497,7 @@ function RunCard({
   run,
   busyAction,
   onOpen,
+  onTogglePinned,
   onPause,
   onResume,
   onStop,
@@ -474,6 +505,7 @@ function RunCard({
   run: RunSummary
   busyAction: string | null
   onOpen: () => void
+  onTogglePinned: () => void
   onPause: () => void
   onResume: () => void
   onStop: () => void
@@ -487,6 +519,7 @@ function RunCard({
               {run.agent || 'Agent'} — {run.title || 'Working'}
             </p>
             <p className="text-xs text-gray-500 line-clamp-2 mt-1">{run.latestText}</p>
+            <RunMetrics run={run} />
           </div>
           <StatusBadge status={run.status} />
         </div>
@@ -495,6 +528,9 @@ function RunCard({
       <div className="mt-3 flex items-center justify-between gap-2">
         <span className="text-[11px] text-gray-400">{formatTime(run.latestAt)} · {run.eventCount} events</span>
         <div className="flex items-center gap-1">
+          <IconButton label={run.pinned ? 'Unpin run' : 'Pin run'} onClick={onTogglePinned}>
+            {run.pinned ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
+          </IconButton>
           <IconButton label="Open details" onClick={onOpen}><Eye className="w-3.5 h-3.5" /></IconButton>
           {run.status === 'paused' ? (
             <IconButton label="Resume run" onClick={onResume} disabled={busyAction === `${run.runId}:running`}>
@@ -570,26 +606,30 @@ function ApprovalCard({
   )
 }
 
-function CompactRunRow({ run, onOpen }: { run: RunSummary; onOpen: () => void }) {
+function CompactRunRow({ run, onOpen, onTogglePinned }: { run: RunSummary; onOpen: () => void; onTogglePinned: () => void }) {
   const Icon = run.status === 'completed' ? CheckCircle2 : run.status === 'failed' ? XCircle : AlertTriangle
   return (
-    <button
-      type="button"
-      onClick={onOpen}
-      className="w-full rounded-lg border border-gray-200 dark:border-gray-800 bg-light-muted/60 dark:bg-dark p-3 text-left hover:border-primary/40 transition-colors"
-    >
+    <div className="w-full rounded-lg border border-gray-200 dark:border-gray-800 bg-light-muted/60 dark:bg-dark p-3 hover:border-primary/40 transition-colors">
       <div className="flex items-start gap-2">
         <Icon className={cn(
           'w-4 h-4 mt-0.5 shrink-0',
           run.status === 'completed' ? 'text-green-500' : 'text-red-500'
         )} />
-        <div className="min-w-0">
+        <button type="button" onClick={onOpen} className="min-w-0 flex-1 text-left">
           <p className="text-sm font-semibold text-gray-900 dark:text-white truncate">{run.agent || 'Agent'}</p>
           <p className="text-xs text-gray-500 truncate">{run.title || run.latestText}</p>
-          <p className="text-[11px] text-gray-400 mt-1">{formatTime(run.latestAt)}</p>
-        </div>
+          <RunMetrics run={run} compact />
+        </button>
+        <button
+          type="button"
+          onClick={onTogglePinned}
+          className="p-1.5 rounded-lg text-gray-400 hover:text-primary hover:bg-primary/10"
+          title={run.pinned ? 'Unpin run' : 'Pin run'}
+        >
+          {run.pinned ? <PinOff className="w-3.5 h-3.5" /> : <Pin className="w-3.5 h-3.5" />}
+        </button>
       </div>
-    </button>
+    </div>
   )
 }
 
@@ -597,6 +637,7 @@ function RunDetails({
   run,
   busyAction,
   onBack,
+  onTogglePinned,
   onPause,
   onResume,
   onStop,
@@ -608,6 +649,7 @@ function RunDetails({
   run: RunSummary
   busyAction: string | null
   onBack: () => void
+  onTogglePinned: () => void
   onPause: () => void
   onResume: () => void
   onStop: () => void
@@ -632,6 +674,7 @@ function RunDetails({
           <div className="min-w-0">
             <h3 className="text-sm font-black text-gray-900 dark:text-white">{run.agent || 'Agent'}</h3>
             <p className="text-xs text-gray-500 mt-1">{run.title || 'Run details'}</p>
+            <RunMetrics run={run} />
           </div>
           <StatusBadge status={run.status} />
         </div>
@@ -648,6 +691,9 @@ function RunDetails({
           )}
           <button type="button" onClick={onStop} className="btn-secondary px-3 py-2 text-xs" disabled={busyAction === `${run.runId}:stopped`}>
             Stop
+          </button>
+          <button type="button" onClick={onTogglePinned} className="btn-secondary px-3 py-2 text-xs">
+            {run.pinned ? 'Unpin' : 'Pin'}
           </button>
           <select
             value={run.priority}
@@ -698,6 +744,25 @@ function StatusBadge({ status }: { status: RunStatus }) {
     <span className={cn('px-2 py-1 rounded-lg text-[10px] font-black uppercase whitespace-nowrap', statusStyles[status])}>
       {statusLabels[status]}
     </span>
+  )
+}
+
+function RunMetrics({ run, compact }: { run: RunSummary; compact?: boolean }) {
+  const parts = [
+    run.currentStage,
+    run.emailCount !== null ? `${run.emailCount} emails` : '',
+    `${run.progress}%`,
+    formatTime(run.latestAt),
+  ].filter(Boolean)
+
+  return (
+    <div className={cn('mt-1 flex flex-wrap gap-1.5 text-[11px] text-gray-400', compact && 'gap-1')}>
+      {parts.map((part) => (
+        <span key={part} className="rounded-md bg-white/70 dark:bg-dark-lighter px-1.5 py-0.5">
+          {part}
+        </span>
+      ))}
+    </div>
   )
 }
 
@@ -851,7 +916,7 @@ function SidebarRailCount({ label, count, tone }: { label: string; count: number
   )
 }
 
-function summarizeRuns(events: RunTimelineEvent[]) {
+function summarizeRuns(events: RunTimelineEvent[], pinnedRunIds: string[]) {
   const grouped = new Map<string, RunTimelineEvent[]>()
 
   events.forEach((event) => {
@@ -872,9 +937,12 @@ function summarizeRuns(events: RunTimelineEvent[]) {
       latestAt: latest.at,
       status,
       eventCount: sorted.length,
-      progress: deriveProgress(status, sorted.length),
+      progress: deriveProgress(status, sorted),
       requiresApproval: sorted.some((event) => event.requiresApproval),
       priority: derivePriority(sorted),
+      emailCount: deriveEmailCount(sorted),
+      currentStage: latest.eventType.replace(/_/g, ' '),
+      pinned: pinnedRunIds.includes(runId),
       events: sorted,
     } satisfies RunSummary
   }).sort((a, b) => new Date(b.latestAt).getTime() - new Date(a.latestAt).getTime())
@@ -896,10 +964,15 @@ function deriveRunStatus(events: RunTimelineEvent[]): RunStatus {
   return 'completed'
 }
 
-function deriveProgress(status: RunStatus, eventCount: number) {
+function deriveProgress(status: RunStatus, events: RunTimelineEvent[]) {
+  for (const event of events) {
+    const progress = event.metadata?.progress
+    if (typeof progress === 'number' && Number.isFinite(progress)) return Math.max(0, Math.min(100, Math.round(progress)))
+  }
   if (status === 'completed' || status === 'failed' || status === 'stopped') return 100
   if (status === 'waiting_approval') return 65
   if (status === 'paused') return 50
+  const eventCount = events.length
   return Math.min(90, Math.max(15, eventCount * 15))
 }
 
@@ -931,6 +1004,24 @@ function derivePriority(events: RunTimelineEvent[]): RunSummary['priority'] {
   }
   if (haystack.includes('later') || haystack.includes('low priority')) return 'low'
   return 'normal'
+}
+
+function deriveEmailCount(events: RunTimelineEvent[]) {
+  for (const event of events) {
+    const count = event.metadata?.emailCount || event.metadata?.emailsRead
+    if (typeof count === 'number' && Number.isFinite(count)) return count
+    const match = event.text.match(/Read\s+(\d+)\s+email item/i) || event.text.match(/organised\s+(\d+)\s+Outlook email/i)
+    if (match) return Number(match[1])
+  }
+  return null
+}
+
+function agentIdFromRun(run: RunSummary) {
+  for (const event of run.events) {
+    const agentId = event.metadata?.agentId
+    if (typeof agentId === 'string' && agentId.trim()) return agentId
+  }
+  return run.agent.toLowerCase().replace(/[^a-z0-9-]/g, '') || 'assistant'
 }
 
 function extractScreenshotPath(event: RunTimelineEvent) {

@@ -1,6 +1,6 @@
 use once_cell::sync::Lazy;
 use serde::{Deserialize, Serialize};
-use std::{fs, path::PathBuf};
+use std::{collections::HashMap, fs, path::PathBuf, sync::Mutex};
 use sysinfo::System;
 use uuid::Uuid;
 
@@ -41,6 +41,8 @@ static RUNTIME_DIR: Lazy<PathBuf> = Lazy::new(|| {
     }
     path
 });
+
+static RUN_CONTROLS: Lazy<Mutex<HashMap<String, String>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
 fn runs_path(agent_id: &str) -> PathBuf {
     RUNTIME_DIR.join(format!("{}_runs.json", agent_id))
@@ -93,6 +95,7 @@ fn emit_activity_event(
             "agentId": agent_id,
             "activityId": activity.id,
             "priority": priority,
+            "progress": phase_progress(&activity.phase, &activity.status),
             "sourceKind": source_kind(agent_id, &activity.phase),
         }),
     );
@@ -135,6 +138,42 @@ fn source_kind(agent_id: &str, phase: &str) -> &'static str {
         (_, "connector") => "connector",
         (_, "agent") => "reasoning",
         _ => "task",
+    }
+}
+
+fn phase_progress(phase: &str, status: &str) -> u8 {
+    let status = status.to_ascii_lowercase();
+    if status.contains("complete") {
+        return 100;
+    }
+    match phase {
+        "started" | "goal" => 8,
+        "permission" | "classic_outlook" | "connector" => 15,
+        "scanning_folders" => 25,
+        "read_mail" | "reading_email" => 42,
+        "categorising" => 55,
+        "analysing_attachments" => 66,
+        "grouping_contacts" | "local_model" | "agent" => 78,
+        "needs_approval" => 92,
+        "completed" | "done" => 100,
+        _ => {
+            if status.contains("running") { 45 } else { 70 }
+        }
+    }
+}
+
+fn control_requested(run_id: &str) -> Option<String> {
+    RUN_CONTROLS
+        .lock()
+        .ok()
+        .and_then(|controls| controls.get(run_id).cloned())
+}
+
+fn ensure_not_cancelled(run_id: &str) -> Result<(), String> {
+    match control_requested(run_id).as_deref() {
+        Some("cancel") => Err("Run cancelled by user from Live Agent Sidebar.".to_string()),
+        Some("pause") => Err("Run paused by user from Live Agent Sidebar.".to_string()),
+        _ => Ok(()),
     }
 }
 
@@ -445,7 +484,9 @@ pub async fn run_hermes_email_intelligence_inner(app_handle: Option<&tauri::AppH
         false,
         priority,
     );
+    ensure_not_cancelled(&run_id)?;
     let emails = crate::connectors::classic_outlook::list_classic_outlook_all(per_folder.or(Some(75)), Some(800))?;
+    ensure_not_cancelled(&run_id)?;
     push_activity_event(
         &mut activities,
         app_handle,
@@ -470,6 +511,7 @@ pub async fn run_hermes_email_intelligence_inner(app_handle: Option<&tauri::AppH
     );
 
     let emails_json = serde_json::to_string_pretty(&emails).map_err(|e| e.to_string())?;
+    ensure_not_cancelled(&run_id)?;
     let prompt = format!(
         "You are Hermes Email Intelligence v1 for Silva. Analyse the Classic Outlook email batch below. This is the free local desktop path, not Microsoft Graph.\n\nRules:\n- Read only. Do not claim anything was sent, deleted, archived, moved, labelled, or submitted.\n- Create reply drafts in text only where useful.\n- Flag every external send/delete/archive/label action as needing Silva approval.\n- Treat Outlook folder path, unread, importance, attachments, categories, flagStatus, flagRequest, and taskDueDate as important signals.\n- Detect and group: urgent, flagged/pinned/saved-style items, needs reply, waiting for response, invoice/receipt/finance, legal/visa/court, property/shop/premises, business opportunities, spam/scam risk.\n- Use Silva's name history when relevant: Silva Kandasamy, Shiva Kandasamy, Siyanthank Kandasamy.\n- Keep it practical: top priorities first, then per-folder summary, then draft replies.\n\nEmail batch JSON:\n{}\n\nReturn exactly these sections:\n1. Executive Summary\n2. Urgent / Important\n3. Flagged / Pinned / Saved Signals\n4. Needs Reply\n5. Waiting For Response\n6. Finance / Invoice / Receipt\n7. Legal / Visa / Case\n8. Property / Shop / Premises\n9. Spam / Scam / Risk\n10. Draft Replies Only\n11. Approval Needed Before Action",
         emails_json
@@ -527,6 +569,7 @@ pub async fn run_hermes_email_intelligence_inner(app_handle: Option<&tauri::AppH
             fallback_email_intelligence(&emails)
         }
     };
+    ensure_not_cancelled(&run_id)?;
 
     let approvals_required = vec![
         "Sending any email reply requires approval".to_string(),
@@ -602,6 +645,91 @@ pub async fn run_hermes_email_intelligence_inner(app_handle: Option<&tauri::AppH
     );
 
     Ok(run)
+}
+
+#[tauri::command]
+pub async fn request_agent_run_control(
+    app_handle: tauri::AppHandle,
+    run_id: String,
+    agent_id: String,
+    action: String,
+    goal: Option<String>,
+) -> Result<serde_json::Value, String> {
+    let normalized = action.to_ascii_lowercase();
+    if !["pause", "cancel", "resume"].contains(&normalized.as_str()) {
+        return Err("Unsupported run control action. Use pause, cancel, or resume.".to_string());
+    }
+
+    if normalized == "pause" || normalized == "cancel" {
+        RUN_CONTROLS
+            .lock()
+            .map_err(|_| "Run control registry lock failed.".to_string())?
+            .insert(run_id.clone(), normalized.clone());
+    } else {
+        RUN_CONTROLS
+            .lock()
+            .map_err(|_| "Run control registry lock failed.".to_string())?
+            .remove(&run_id);
+    }
+
+    let status = match normalized.as_str() {
+        "pause" => "paused",
+        "cancel" => "stopped",
+        "resume" => "running",
+        _ => "running",
+    };
+    let title = match normalized.as_str() {
+        "pause" => "Run pause requested",
+        "cancel" => "Run cancel requested",
+        "resume" => "Run resume requested",
+        _ => "Run control requested",
+    };
+    let text = match normalized.as_str() {
+        "pause" => "Pause requested from Live Agent Sidebar. Running jobs honor this between safe stages.",
+        "cancel" => "Cancel requested from Live Agent Sidebar. Running jobs honor this between safe stages.",
+        "resume" => "Resume requested from Live Agent Sidebar.",
+        _ => "Run control requested.",
+    };
+
+    let _ = crate::run_timeline::record_timeline_event(
+        Some(&app_handle),
+        run_id.clone(),
+        format!("control_{}", normalized),
+        "live_agent_sidebar".to_string(),
+        agent_name(&agent_id).to_string(),
+        title.to_string(),
+        text.to_string(),
+        status.to_string(),
+        false,
+        serde_json::json!({
+            "agentId": agent_id,
+            "priority": priority_for_goal(goal.as_deref().unwrap_or_default()),
+            "progress": if normalized == "resume" { 35 } else { 100 },
+            "controlAction": normalized,
+        }),
+    );
+
+    let resumed_run = if normalized == "resume" {
+        let goal = goal.unwrap_or_default();
+        if agent_id == "hermes" && goal.to_ascii_lowercase().contains("email intelligence") {
+            Some(serde_json::json!(run_hermes_email_intelligence_inner(Some(&app_handle), Some(75)).await?))
+        } else if !goal.trim().is_empty() {
+            Some(serde_json::json!(run_agent_task(app_handle.clone(), agent_id.clone(), goal).await?))
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    Ok(serde_json::json!({
+        "ok": true,
+        "runId": run_id,
+        "agentId": agent_id,
+        "action": normalized,
+        "resumedRun": resumed_run,
+        "note": "Pause/cancel are cooperative controls; active jobs check them between safe stages."
+    }))
 }
 
 fn extract_first_url(text: &str) -> Option<String> {

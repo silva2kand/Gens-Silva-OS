@@ -127,6 +127,7 @@ pub fn run() {
             permissions::list_permission_rules,
             permissions::evaluate_permission,
             agent_runtime::list_agent_activity,
+            agent_runtime::request_agent_run_control,
             agent_runtime::run_agent_task,
             agent_runtime::run_hermes_email_intelligence,
             agent_runtime::run_openclaw_computer_operator,
