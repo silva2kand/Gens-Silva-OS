@@ -420,10 +420,16 @@ export default function ChatInput() {
       const languageInstruction = isTamilSpeech(voiceSettings.language)
         ? `The user selected ${voiceLanguageLabels[voiceSettings.language]} for speech/replies. Reply in clean, natural Tamil. Never split names: Silva is சில்வா and Genz Silva is ஜென்ஸ் சில்வா. Use ${voiceSettings.language === 'ta-LK' ? 'casual Jaffna/Sri Lankan Tamil with நீங்க/இருக்கீங்க where natural' : 'standard Indian Tamil with நீங்கள்/இருக்கிறீர்கள்'}. Keep names, email addresses, invoice references, addresses, source quotes, and legal/financial terms accurate. Do not answer in English unless the user explicitly asks for English.`
         : 'Reply in English unless the user asks for another language.'
+      const naturalStyleInstruction = [
+        'Conversation style: sound natural and direct, not formal or robotic.',
+        'For Hermes/email tasks, say something like: "Sure Silva — I’ll check Outlook and organise the emails properly. I won’t send, delete, archive, move, or label anything without your approval."',
+        'For Tamil greetings, never start with "நீங்க காலை வணக்கம்" or "நீங்கள் காலை வணக்கம்". Use "காலை வணக்கம் Silva! எப்படி இருக்கீங்க?" for Sri Lankan Tamil, or "காலை வணக்கம் Silva! நீங்கள் எப்படி இருக்கிறீர்கள்?" for Indian Tamil.',
+      ].join('\n')
       const enrichedPrompt = [
         userPrompt,
         thinkingInstruction,
         languageInstruction,
+        naturalStyleInstruction,
         'Safety and accuracy rules: never invent invoice amounts, rent amounts, due dates, legal facts, payment status, or attachment details. If the real email body/attachment/source does not contain a value, say "not found in the available source" and offer to open/extract the original item. For speech-friendly output, avoid raw JSON unless asked.',
         toolRun.context ? `Desktop tool context already gathered:\n${toolRun.context}` : '',
       ].filter(Boolean).join('\n\n')

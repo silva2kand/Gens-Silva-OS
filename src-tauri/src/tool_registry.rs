@@ -111,7 +111,8 @@ pub async fn execute_registered_tool(name: String, args: serde_json::Value) -> R
             args.get("perFolder").and_then(|value| value.as_u64()).map(|value| value as usize),
             args.get("totalLimit").and_then(|value| value.as_u64()).map(|value| value as usize),
         )?)),
-        "run_hermes_email_intelligence" => Ok(serde_json::json!(crate::agent_runtime::run_hermes_email_intelligence(
+        "run_hermes_email_intelligence" => Ok(serde_json::json!(crate::agent_runtime::run_hermes_email_intelligence_inner(
+            None,
             args.get("perFolder").and_then(|value| value.as_u64()).map(|value| value as usize),
         ).await?)),
         "run_openclaw_computer_operator" => Ok(serde_json::json!(crate::agent_runtime::run_openclaw_computer_operator(

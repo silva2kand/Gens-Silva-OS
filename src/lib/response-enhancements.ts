@@ -232,6 +232,10 @@ function tamilSuggestion(label: string, language: SpeechLanguage) {
 export function fixTamilOutput(text: string, language: SpeechLanguage) {
   if (!isTamilSpeech(language)) return text
   let fixed = text
+    .replace(/நீங்க\s+காலை\s+வணக்கம்[!,]?\s*/g, 'காலை வணக்கம் Silva! ')
+    .replace(/நீங்கள்\s+காலை\s+வணக்கம்[!,]?\s*/g, 'காலை வணக்கம் Silva! ')
+    .replace(/நீங்க\s+வணக்கம்[!,]?\s*/g, 'வணக்கம் Silva! ')
+    .replace(/நீங்கள்\s+வணக்கம்[!,]?\s*/g, 'வணக்கம் Silva! ')
     .replace(/ஜென்\s*சில்\s*வா/g, 'ஜென்ஸ் சில்வா')
     .replace(/ஜென்\s*சில்வா/g, 'ஜென்ஸ் சில்வா')
     .replace(/ஜென்ஸ் சில்வா இருக்கிறேன்/g, 'ஜென்ஸ் சில்வா')

@@ -235,8 +235,12 @@ export async function executeAssistantTools(
     return {
       handled: true,
       directAnswer: [
-        'Hermes checked Classic Outlook local mail.',
+        'Sure Silva — I checked Classic Outlook and started organising the emails properly.',
         readActivity || '',
+        '',
+        'I grouped the work around people, properties, companies, finance, legal/council items, cases, replies needed, and follow-ups.',
+        '',
+        'I did not send, delete, archive, move, or label anything. Anything like that still needs your approval first.',
         '',
         summarize(result?.result || result || 'No Hermes result returned.'),
         approvals,
@@ -378,11 +382,12 @@ export async function executeAssistantTools(
       ].join('\n\n')
 
     const result = await runTool(`agent.${agent.id}`, { input: prompt }, async () => (
-      invoke('run_agent', { id: agent.id, input: enrichedAgentInput })
+      invoke('run_agent_task', { agentId: agent.id, goal: enrichedAgentInput })
     ))
+    const taskResult = result as { result?: string; status?: string } | null
     return {
       handled: true,
-      directAnswer: `${agent.label}:\n\n${summarize(result)}`,
+      directAnswer: `${agent.label}:\n\n${summarize(taskResult?.result || result)}`,
       context: context.join('\n\n'),
       tools,
     }

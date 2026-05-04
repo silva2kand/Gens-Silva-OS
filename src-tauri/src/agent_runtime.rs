@@ -83,7 +83,7 @@ fn emit_activity_event(
         app_handle,
         run_id.to_string(),
         activity.phase.clone(),
-        "agent_runtime".to_string(),
+        format!("agent.{}", agent_id),
         agent_name(agent_id).to_string(),
         activity.status.replace('_', " "),
         activity.message.clone(),
@@ -367,28 +367,57 @@ fn list_lines(items: &[String]) -> String {
 }
 
 #[tauri::command]
-pub async fn run_hermes_email_intelligence(per_folder: Option<usize>) -> Result<AgentTaskRun, String> {
+pub async fn run_hermes_email_intelligence(app_handle: tauri::AppHandle, per_folder: Option<usize>) -> Result<AgentTaskRun, String> {
+    run_hermes_email_intelligence_inner(Some(&app_handle), per_folder).await
+}
+
+pub async fn run_hermes_email_intelligence_inner(app_handle: Option<&tauri::AppHandle>, per_folder: Option<usize>) -> Result<AgentTaskRun, String> {
     let agent_id = "hermes".to_string();
+    let run_id = Uuid::new_v4().to_string();
+    let priority = "normal";
     let goal = "Hermes Email Intelligence v1: read latest Classic Outlook Inbox/Sent/Drafts, summarise, detect urgency/replies/waiting/categories, and create draft replies only.".to_string();
     let started_at = chrono::Utc::now().to_rfc3339();
-    let mut activities = vec![
-        activity(&agent_id, "goal", "received", "Hermes Email Intelligence v1 started.", false),
-        activity(&agent_id, "permission", "approval_gated", "Read-only analysis is allowed. Sending, deleting, archiving, moving, or labelling requires explicit approval.", true),
-    ];
+    let mut activities = vec![];
+    push_activity_event(
+        &mut activities,
+        app_handle,
+        &run_id,
+        &agent_id,
+        "started",
+        "running",
+        "Hermes started Outlook email organisation.",
+        false,
+        priority,
+    );
+    push_activity_event(
+        &mut activities,
+        app_handle,
+        &run_id,
+        &agent_id,
+        "permission",
+        "ready",
+        "Read-only analysis is allowed. Sending, deleting, archiving, moving, or labelling still requires explicit approval.",
+        false,
+        priority,
+    );
 
     let status = crate::connectors::classic_outlook::classic_outlook_status()?;
     let profile_connected = status["profileConnected"].as_bool().unwrap_or(false);
-    activities.push(activity(
+    push_activity_event(
+        &mut activities,
+        app_handle,
+        &run_id,
         &agent_id,
         "classic_outlook",
         if profile_connected { "ready" } else { "needs_outlook" },
         status["message"].as_str().unwrap_or("Classic Outlook status checked."),
         !profile_connected,
-    ));
+        priority,
+    );
     if !profile_connected {
         let finished_at = chrono::Utc::now().to_rfc3339();
         let run = AgentTaskRun {
-            id: Uuid::new_v4().to_string(),
+            id: run_id,
             agent_id: agent_id.clone(),
             goal,
             status: "needs_setup".to_string(),
@@ -405,15 +434,40 @@ pub async fn run_hermes_email_intelligence(per_folder: Option<usize>) -> Result<
         return Ok(run);
     }
 
-    activities.push(activity(&agent_id, "read_mail", "running", "Reading Classic Outlook end to end: Inbox, Sent, Drafts, Outbox, flagged/category metadata, and all mail folders with safety limits.", false));
-    let emails = crate::connectors::classic_outlook::list_classic_outlook_all(per_folder.or(Some(75)), Some(800))?;
-    activities.push(activity(
+    push_activity_event(
+        &mut activities,
+        app_handle,
+        &run_id,
         &agent_id,
-        "read_mail",
-        "complete",
+        "scanning_folders",
+        "running",
+        "Reading Classic Outlook folders: Inbox, Sent, Drafts, Outbox, Archive, Junk, Deleted, flagged/category metadata, and account folders.",
+        false,
+        priority,
+    );
+    let emails = crate::connectors::classic_outlook::list_classic_outlook_all(per_folder.or(Some(75)), Some(800))?;
+    push_activity_event(
+        &mut activities,
+        app_handle,
+        &run_id,
+        &agent_id,
+        "reading_email",
+        "running",
         format!("Read {} email item(s) across Classic Outlook folders.", emails.len()),
         false,
-    ));
+        priority,
+    );
+    push_activity_event(
+        &mut activities,
+        app_handle,
+        &run_id,
+        &agent_id,
+        "categorising",
+        "running",
+        "Organising emails by people, properties, companies, finance, legal/council, cases, and replies needed.",
+        false,
+        priority,
+    );
 
     let emails_json = serde_json::to_string_pretty(&emails).map_err(|e| e.to_string())?;
     let prompt = format!(
@@ -421,14 +475,55 @@ pub async fn run_hermes_email_intelligence(per_folder: Option<usize>) -> Result<
         emails_json
     );
 
-    activities.push(activity(&agent_id, "local_model", "running", "Local AI summarising and classifying the email batch.", false));
+    push_activity_event(
+        &mut activities,
+        app_handle,
+        &run_id,
+        &agent_id,
+        "analysing_attachments",
+        "running",
+        "Checking attachment, flag, category, unread, importance, and follow-up signals from Outlook metadata.",
+        false,
+        priority,
+    );
+    push_activity_event(
+        &mut activities,
+        app_handle,
+        &run_id,
+        &agent_id,
+        "grouping_contacts",
+        "running",
+        "Local AI is building the organised email briefing and draft-only action list.",
+        false,
+        priority,
+    );
     let result = match crate::agents::run_agent(agent_id.clone(), prompt).await {
         Ok(result) => {
-            activities.push(activity(&agent_id, "local_model", "complete", "Local AI produced email intelligence summary and draft replies.", false));
+            push_activity_event(
+                &mut activities,
+                app_handle,
+                &run_id,
+                &agent_id,
+                "grouping_contacts",
+                "complete",
+                "Local AI produced email intelligence summary and draft replies.",
+                false,
+                priority,
+            );
             result
         }
         Err(error) => {
-            activities.push(activity(&agent_id, "local_model", "fallback", format!("Local AI failed: {}. Used rule-based fallback.", error), false));
+            push_activity_event(
+                &mut activities,
+                app_handle,
+                &run_id,
+                &agent_id,
+                "grouping_contacts",
+                "fallback",
+                format!("Local AI failed: {}. Used rule-based fallback.", error),
+                false,
+                priority,
+            );
             fallback_email_intelligence(&emails)
         }
     };
@@ -438,11 +533,21 @@ pub async fn run_hermes_email_intelligence(per_folder: Option<usize>) -> Result<
         "Deleting, archiving, moving, or labelling any email requires approval".to_string(),
         "Legal/court/visa/tax/finance submissions require approval and professional double-check where needed".to_string(),
     ];
-    activities.push(activity(&agent_id, "drafts", "complete", "Draft replies were produced as text only inside the app. Nothing was sent.", true));
+    push_activity_event(
+        &mut activities,
+        app_handle,
+        &run_id,
+        &agent_id,
+        "needs_approval",
+        "needs_approval",
+        "Draft replies and any send/delete/archive/move/label actions need Silva approval. Nothing was sent or changed.",
+        true,
+        priority,
+    );
 
     let finished_at = chrono::Utc::now().to_rfc3339();
     let run = AgentTaskRun {
-        id: Uuid::new_v4().to_string(),
+        id: run_id.clone(),
         agent_id: agent_id.clone(),
         goal,
         status: "needs_approval".to_string(),
@@ -457,6 +562,28 @@ pub async fn run_hermes_email_intelligence(per_folder: Option<usize>) -> Result<
     runs.insert(0, run.clone());
     runs.truncate(50);
     write_runs(&agent_id, &runs)?;
+
+    let _ = crate::run_timeline::record_timeline_event(
+        app_handle,
+        run.id.clone(),
+        "completed".to_string(),
+        "agent.hermes".to_string(),
+        "Hermes".to_string(),
+        "Outlook organisation ready".to_string(),
+        format!(
+            "Hermes organised {} Outlook email item(s). Review the briefing and approve any draft/send/move actions first.",
+            emails.len()
+        ),
+        "waiting_approval".to_string(),
+        true,
+        serde_json::json!({
+            "agentId": agent_id,
+            "priority": priority,
+            "emailCount": emails.len(),
+            "approvalsRequired": run.approvals_required,
+            "sourceKind": "email",
+        }),
+    );
 
     let _ = crate::notification_center::create_universal_notification_internal(
         "whatsapp".to_string(),
