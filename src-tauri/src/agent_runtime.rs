@@ -72,6 +72,105 @@ fn activity(agent_id: &str, phase: &str, status: &str, message: impl Into<String
     }
 }
 
+fn emit_activity_event(
+    app_handle: Option<&tauri::AppHandle>,
+    run_id: &str,
+    agent_id: &str,
+    activity: &AgentActivity,
+    priority: &str,
+) {
+    let _ = crate::run_timeline::record_timeline_event(
+        app_handle,
+        run_id.to_string(),
+        activity.phase.clone(),
+        "agent_runtime".to_string(),
+        agent_name(agent_id).to_string(),
+        activity.status.replace('_', " "),
+        activity.message.clone(),
+        timeline_status(&activity.status, activity.requires_approval).to_string(),
+        activity.requires_approval,
+        serde_json::json!({
+            "agentId": agent_id,
+            "activityId": activity.id,
+            "priority": priority,
+            "sourceKind": source_kind(agent_id, &activity.phase),
+        }),
+    );
+}
+
+fn push_activity_event(
+    activities: &mut Vec<AgentActivity>,
+    app_handle: Option<&tauri::AppHandle>,
+    run_id: &str,
+    agent_id: &str,
+    phase: &str,
+    status: &str,
+    message: impl Into<String>,
+    requires_approval: bool,
+    priority: &str,
+) {
+    let item = activity(agent_id, phase, status, message, requires_approval);
+    emit_activity_event(app_handle, run_id, agent_id, &item, priority);
+    activities.push(item);
+}
+
+fn agent_name(agent_id: &str) -> &str {
+    match agent_id {
+        "hermes" => "Hermes",
+        "paperclip" => "Paperclip",
+        "spaceagent" => "SpaceAgent",
+        "openclaw" => "OpenClaw",
+        "solicister" => "Solicister",
+        "accountants" => "Accountants",
+        "self-study" | "selfstudy" => "Self-Study",
+        _ => agent_id,
+    }
+}
+
+fn source_kind(agent_id: &str, phase: &str) -> &'static str {
+    match (agent_id, phase) {
+        ("hermes", "classic_outlook" | "classic_outlook_search" | "email_archive" | "read_mail") => "email",
+        ("openclaw", "screenshot" | "ocr" | "vision_plan") => "vision",
+        (_, "permission") => "approval",
+        (_, "connector") => "connector",
+        (_, "agent") => "reasoning",
+        _ => "task",
+    }
+}
+
+fn timeline_status(status: &str, requires_approval: bool) -> &'static str {
+    if requires_approval {
+        return "waiting_approval";
+    }
+    let lower = status.to_ascii_lowercase();
+    if lower.contains("error") || lower.contains("failed") {
+        "failed"
+    } else if lower.contains("running") || lower.contains("received") || lower.contains("started") {
+        "running"
+    } else if lower.contains("approval") || lower.contains("needs") {
+        "waiting_approval"
+    } else {
+        "completed"
+    }
+}
+
+fn priority_for_goal(goal: &str) -> &'static str {
+    let lower = goal.to_ascii_lowercase();
+    if lower.contains("urgent")
+        || lower.contains("deadline")
+        || lower.contains("court")
+        || lower.contains("visa")
+        || lower.contains("final notice")
+        || lower.contains("overdue")
+    {
+        "urgent"
+    } else if lower.contains("later") || lower.contains("low priority") || lower.contains("when free") {
+        "low"
+    } else {
+        "normal"
+    }
+}
+
 fn classify_goal(goal: &str) -> Vec<String> {
     let lower = goal.to_lowercase();
     let mut approvals = vec![];
@@ -661,35 +760,96 @@ pub fn list_agent_activity(agent_id: String) -> Result<Vec<AgentTaskRun>, String
 }
 
 #[tauri::command]
-pub async fn run_agent_task(agent_id: String, goal: String) -> Result<AgentTaskRun, String> {
+pub async fn run_agent_task(app_handle: tauri::AppHandle, agent_id: String, goal: String) -> Result<AgentTaskRun, String> {
+    let run_id = Uuid::new_v4().to_string();
+    let priority = priority_for_goal(&goal);
     let started_at = chrono::Utc::now().to_rfc3339();
-    let mut activities = vec![
-        activity(&agent_id, "goal", "received", format!("Goal received: {}", goal), false),
-        activity(&agent_id, "plan", "complete", "Built task plan: check permissions, gather connector context, run agent, return approval-gated result.", false),
-    ];
+    let mut activities = vec![];
+    push_activity_event(
+        &mut activities,
+        Some(&app_handle),
+        &run_id,
+        &agent_id,
+        "goal",
+        "received",
+        format!("Goal received: {}", goal),
+        false,
+        priority,
+    );
+    push_activity_event(
+        &mut activities,
+        Some(&app_handle),
+        &run_id,
+        &agent_id,
+        "plan",
+        "complete",
+        "Built task plan: check permissions, gather connector context, run agent, return approval-gated result.",
+        false,
+        priority,
+    );
     let approvals_required = classify_goal(&goal);
     for approval in &approvals_required {
-        activities.push(activity(&agent_id, "permission", "approval_required", approval, true));
+        push_activity_event(
+            &mut activities,
+            Some(&app_handle),
+            &run_id,
+            &agent_id,
+            "permission",
+            "approval_required",
+            approval,
+            true,
+            priority,
+        );
     }
 
     let context = if agent_id == "hermes" {
         hermes_context(&goal, &mut activities)
     } else {
-        activities.push(activity(&agent_id, "connector", "skipped", "No specialist connector preflight exists yet for this agent.", false));
+        push_activity_event(
+            &mut activities,
+            Some(&app_handle),
+            &run_id,
+            &agent_id,
+            "connector",
+            "skipped",
+            "No specialist connector preflight exists yet for this agent.",
+            false,
+            priority,
+        );
         String::new()
     };
 
-    activities.push(activity(&agent_id, "agent", "running", "Agent reasoning started.", false));
+    push_activity_event(
+        &mut activities,
+        Some(&app_handle),
+        &run_id,
+        &agent_id,
+        "agent",
+        "running",
+        "Agent reasoning started.",
+        false,
+        priority,
+    );
     let prompt = format!(
         "Goal:\n{}\n\nRuntime context:\n{}\n\nReturn: concise result, important findings, drafts only, approvals needed, next actions. Do not claim external actions were sent or completed unless the runtime context proves it.",
         goal, context
     );
     let result = crate::agents::run_agent(agent_id.clone(), prompt).await?;
-    activities.push(activity(&agent_id, "agent", "complete", "Agent result created.", false));
+    push_activity_event(
+        &mut activities,
+        Some(&app_handle),
+        &run_id,
+        &agent_id,
+        "agent",
+        "complete",
+        "Agent result created.",
+        false,
+        priority,
+    );
 
     let finished_at = chrono::Utc::now().to_rfc3339();
     let run = AgentTaskRun {
-        id: Uuid::new_v4().to_string(),
+        id: run_id.clone(),
         agent_id: agent_id.clone(),
         goal,
         status: if approvals_required.is_empty() { "complete".to_string() } else { "needs_approval".to_string() },
@@ -704,6 +864,28 @@ pub async fn run_agent_task(agent_id: String, goal: String) -> Result<AgentTaskR
     runs.insert(0, run.clone());
     runs.truncate(50);
     write_runs(&agent_id, &runs)?;
+
+    let _ = crate::run_timeline::record_timeline_event(
+        Some(&app_handle),
+        run.id.clone(),
+        "done".to_string(),
+        "agent_runtime".to_string(),
+        agent_name(&agent_id).to_string(),
+        "Run complete".to_string(),
+        if run.approvals_required.is_empty() {
+            "Agent run finished. No approval-gated actions are waiting.".to_string()
+        } else {
+            format!("Agent run finished and needs approval for {} action(s).", run.approvals_required.len())
+        },
+        if run.approvals_required.is_empty() { "completed".to_string() } else { "waiting_approval".to_string() },
+        !run.approvals_required.is_empty(),
+        serde_json::json!({
+            "agentId": agent_id,
+            "priority": priority,
+            "approvalsRequired": run.approvals_required,
+            "resultPreview": run.result.chars().take(500).collect::<String>(),
+        }),
+    );
 
     Ok(run)
 }
