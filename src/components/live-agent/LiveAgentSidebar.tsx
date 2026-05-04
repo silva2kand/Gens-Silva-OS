@@ -200,7 +200,7 @@ export default function LiveAgentSidebar() {
         runId: run.runId,
         agentId: agentIdFromRun(run),
         action: status === 'stopped' ? 'cancel' : status === 'paused' ? 'pause' : 'resume',
-        goal: run.events[run.events.length - 1]?.metadata?.goal || run.title || text,
+        goal: goalFromRun(run) || text,
       })
       await loadTimeline()
     } catch (error) {
@@ -230,10 +230,18 @@ export default function LiveAgentSidebar() {
         text: approved
           ? 'User approved this action from the Live Agent Sidebar.'
           : 'User rejected this action from the Live Agent Sidebar.',
-        status: approved ? 'completed' : 'stopped',
+        status: approved ? 'running' : 'stopped',
         requiresApproval: false,
         metadata: { notificationId: notificationId || null, controlledFrom: 'right_sidebar' },
       })
+      if (approved) {
+        await invoke('request_agent_run_control', {
+          runId: run.runId,
+          agentId: agentIdFromRun(run),
+          action: 'resume',
+          goal: goalFromRun(run),
+        })
+      }
       await loadTimeline()
     } catch (error) {
       console.error('Failed to route approval action', error)
@@ -952,15 +960,17 @@ function deriveRunStatus(events: RunTimelineEvent[]): RunStatus {
   const latest = events[0]
   const haystack = `${latest.status} ${latest.eventType} ${latest.title}`.toLowerCase()
   if (haystack.includes('approval_rejected')) return 'stopped'
-  if (haystack.includes('approval_approved') || haystack.includes('approval granted')) return 'completed'
+  if (haystack.includes('approval_approved') || haystack.includes('approval granted')) {
+    return haystack.includes('running') ? 'running' : 'completed'
+  }
   if (haystack.includes('fail') || haystack.includes('error')) return 'failed'
   if (haystack.includes('warning')) return 'warning'
   if (haystack.includes('paused')) return 'paused'
   if (haystack.includes('stopped') || haystack.includes('cancel')) return 'stopped'
+  if (haystack.includes('running') || haystack.includes('started') || haystack.includes('tool')) return 'running'
   if (events.some((event) => event.requiresApproval)) return 'waiting_approval'
   if (haystack.includes('approval')) return 'waiting_approval'
   if (haystack.includes('complete') || haystack.includes('done') || haystack.includes('finished')) return 'completed'
-  if (haystack.includes('running') || haystack.includes('started') || haystack.includes('tool')) return 'running'
   return 'completed'
 }
 
@@ -1022,6 +1032,26 @@ function agentIdFromRun(run: RunSummary) {
     if (typeof agentId === 'string' && agentId.trim()) return agentId
   }
   return run.agent.toLowerCase().replace(/[^a-z0-9-]/g, '') || 'assistant'
+}
+
+function goalFromRun(run: RunSummary) {
+  for (const event of [...run.events].reverse()) {
+    const goal = event.metadata?.goal
+    if (typeof goal === 'string' && goal.trim()) return goal.trim()
+  }
+
+  const goalEvent = run.events.find((event) => {
+    return event.eventType.toLowerCase().includes('goal') || /^Goal received:/i.test(event.text)
+  })
+  if (goalEvent?.text) {
+    return goalEvent.text
+      .replace(/^Goal received:\s*/i, '')
+      .split(/\n\nAccuracy rule:/i)[0]
+      .split(/\n\nConversation style:/i)[0]
+      .trim()
+  }
+
+  return run.latestText || run.title
 }
 
 function extractScreenshotPath(event: RunTimelineEvent) {

@@ -114,6 +114,7 @@ pub async fn execute_registered_tool(name: String, args: serde_json::Value) -> R
         "run_hermes_email_intelligence" => Ok(serde_json::json!(crate::agent_runtime::run_hermes_email_intelligence_inner(
             None,
             args.get("perFolder").and_then(|value| value.as_u64()).map(|value| value as usize),
+            None,
         ).await?)),
         "run_openclaw_computer_operator" => Ok(serde_json::json!(crate::agent_runtime::run_openclaw_computer_operator(
             args.get("goal").and_then(|value| value.as_str()).unwrap_or("Inspect computer context and prepare safe next operator steps.").to_string(),

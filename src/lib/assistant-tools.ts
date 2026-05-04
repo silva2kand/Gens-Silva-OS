@@ -151,7 +151,7 @@ function wantsPropertyValuation(prompt: string) {
 
 function wantsMailUpdates(prompt: string) {
   return /\b(mail|mails|email|emails|inbox|outbox|sent|drafts?|flagged|pinned|saved|favourites?|favorites?|outlook)\b/i.test(prompt)
-    && /\b(update|updates|new|latest|check|read|scan|anything|what'?s|whats)\b/i.test(prompt)
+    && /\b(update|updates|new|latest|check|read|scan|analyse|analyze|organise|organize|organizes|organise|sort|group|categorise|categorize|anything|all|what'?s|whats)\b/i.test(prompt)
 }
 
 export async function queueCompletionNotification(

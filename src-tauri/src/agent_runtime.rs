@@ -405,14 +405,48 @@ fn list_lines(items: &[String]) -> String {
     items.iter().take(10).map(|item| format!("- {}", item)).collect::<Vec<_>>().join("\n")
 }
 
-#[tauri::command]
-pub async fn run_hermes_email_intelligence(app_handle: tauri::AppHandle, per_folder: Option<usize>) -> Result<AgentTaskRun, String> {
-    run_hermes_email_intelligence_inner(Some(&app_handle), per_folder).await
+fn is_hermes_email_goal(agent_id: &str, goal: &str) -> bool {
+    if agent_id != "hermes" {
+        return false;
+    }
+    let lower = goal.to_ascii_lowercase();
+    [
+        "email",
+        "emails",
+        "mail",
+        "mails",
+        "outlook",
+        "inbox",
+        "outbox",
+        "sent",
+        "draft",
+        "flagged",
+        "pinned",
+        "saved",
+        "analyse",
+        "analyze",
+        "organise",
+        "organize",
+        "organizes",
+        "categorise",
+        "categorize",
+    ]
+    .iter()
+    .any(|term| lower.contains(term))
 }
 
-pub async fn run_hermes_email_intelligence_inner(app_handle: Option<&tauri::AppHandle>, per_folder: Option<usize>) -> Result<AgentTaskRun, String> {
+#[tauri::command]
+pub async fn run_hermes_email_intelligence(app_handle: tauri::AppHandle, per_folder: Option<usize>) -> Result<AgentTaskRun, String> {
+    run_hermes_email_intelligence_inner(Some(&app_handle), per_folder, None).await
+}
+
+pub async fn run_hermes_email_intelligence_inner(
+    app_handle: Option<&tauri::AppHandle>,
+    per_folder: Option<usize>,
+    run_id_override: Option<String>,
+) -> Result<AgentTaskRun, String> {
     let agent_id = "hermes".to_string();
-    let run_id = Uuid::new_v4().to_string();
+    let run_id = run_id_override.unwrap_or_else(|| Uuid::new_v4().to_string());
     let priority = "normal";
     let goal = "Hermes Email Intelligence v1: read latest Classic Outlook Inbox/Sent/Drafts, summarise, detect urgency/replies/waiting/categories, and create draft replies only.".to_string();
     let started_at = chrono::Utc::now().to_rfc3339();
@@ -625,6 +659,7 @@ pub async fn run_hermes_email_intelligence_inner(app_handle: Option<&tauri::AppH
             "emailCount": emails.len(),
             "approvalsRequired": run.approvals_required,
             "sourceKind": "email",
+            "goal": run.goal.clone(),
         }),
     );
 
@@ -711,8 +746,8 @@ pub async fn request_agent_run_control(
 
     let resumed_run = if normalized == "resume" {
         let goal = goal.unwrap_or_default();
-        if agent_id == "hermes" && goal.to_ascii_lowercase().contains("email intelligence") {
-            Some(serde_json::json!(run_hermes_email_intelligence_inner(Some(&app_handle), Some(75)).await?))
+        if is_hermes_email_goal(&agent_id, &goal) {
+            Some(serde_json::json!(run_hermes_email_intelligence_inner(Some(&app_handle), Some(75), Some(run_id.clone())).await?))
         } else if !goal.trim().is_empty() {
             Some(serde_json::json!(run_agent_task(app_handle.clone(), agent_id.clone(), goal).await?))
         } else {
@@ -1138,6 +1173,7 @@ pub async fn run_agent_task(app_handle: tauri::AppHandle, agent_id: String, goal
             "agentId": agent_id,
             "priority": priority,
             "approvalsRequired": run.approvals_required,
+            "goal": run.goal.clone(),
             "resultPreview": run.result.chars().take(500).collect::<String>(),
         }),
     );
