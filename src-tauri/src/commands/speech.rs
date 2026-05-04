@@ -47,6 +47,8 @@ foreach ($candidate in $voices) {{
 }}
 if ($null -ne $selected) {{
   $voice.Voice = $selected
+}} elseif ($language -like 'ta-*') {{
+  throw 'No installed Windows SAPI Tamil voice was found. Install a Tamil text-to-speech voice, or use the browser speech fallback.'
 }}
 $voice.Rate = {sapi_rate}
 $spoken = $voice.Speak($text, 0)

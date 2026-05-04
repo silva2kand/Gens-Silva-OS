@@ -3,6 +3,7 @@ import { useChatStore } from '@/stores'
 import { cn, formatDate } from '@/lib/utils'
 import { invoke } from '@tauri-apps/api/core'
 import { applyVoiceProfile, fixTamilOutput, formatSpeechForVoice, getFollowUpSuggestions, isTamilSpeech, loadVoiceSettings, saveVoiceSettings, shouldAutoSpeak, speechTranslationPrompt, type SpeechLanguage, type VoiceProfileId, voiceLanguageLabels, voiceProfiles } from '@/lib/response-enhancements'
+import { speakWithBestEngine, stopSpeaking } from '@/lib/speech-playback'
 import { Bot, User, Loader2, Code, AlertCircle, CheckCircle2, Copy, Volume2, RotateCcw, Pencil, PlayCircle, Settings2 } from 'lucide-react'
 import type { ChatMessage, ToolCall } from '@/types'
 
@@ -38,14 +39,6 @@ export default function ChatInterface() {
     const next = { ...voiceSettings, ...updates }
     setVoiceSettings(next)
     saveVoiceSettings(next)
-  }
-
-  const speakNative = async (text: string) => {
-    await invoke('speak_text_native', {
-      text,
-      language: voiceSettings.language,
-      rate: voiceSettings.rate,
-    })
   }
 
   useEffect(() => {
@@ -92,15 +85,12 @@ export default function ChatInterface() {
     const latest = messages[messages.length - 1]
     if (!latest || latest.role !== 'assistant' || !shouldAutoSpeak(latest.content, voiceSettings)) return
     const text = formatSpeechForVoice(latest.content, voiceSettings)
-    speakNative(text).catch(() => {
-      if (!('speechSynthesis' in window)) return
-      const utterance = new SpeechSynthesisUtterance(text)
-      utterance.lang = voiceSettings.language
-      utterance.rate = voiceSettings.rate
-      utterance.pitch = voiceSettings.pitch
-      window.speechSynthesis.cancel()
-      window.speechSynthesis.speak(utterance)
-    })
+    speakWithBestEngine({
+      text,
+      language: voiceSettings.language,
+      rate: voiceSettings.rate,
+      pitch: voiceSettings.pitch,
+    }).catch((error) => console.warn('Auto speech failed', error))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [messages.length])
 
@@ -175,12 +165,31 @@ export default function ChatInterface() {
                 <button
                   type="button"
                   onClick={() => {
-                    window.speechSynthesis?.cancel()
+                    stopSpeaking()
                     invoke('speak_text_native', { text: ' ', language: voiceSettings.language, rate: voiceSettings.rate }).catch(() => {})
                   }}
                   className="w-full rounded-xl bg-red-500/10 px-3 py-2 text-xs font-black uppercase text-red-600 dark:text-red-300"
                 >
                   Interrupt Speech
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const sample = isTamilSpeech(voiceSettings.language)
+                      ? voiceSettings.language === 'ta-LK'
+                        ? 'வணக்கம்! நான் சில்வா. நீங்க எப்படி இருக்கீங்க?'
+                        : 'வணக்கம்! நான் ஜென்ஸ் சில்வா. நீங்கள் எப்படி இருக்கிறீர்கள்?'
+                      : 'Hello Silva. Speech is working.'
+                    speakWithBestEngine({
+                      text: sample,
+                      language: voiceSettings.language,
+                      rate: voiceSettings.rate,
+                      pitch: voiceSettings.pitch,
+                    }).catch((error) => alert(`Speech failed: ${error}`))
+                  }}
+                  className="w-full rounded-xl bg-primary/10 px-3 py-2 text-xs font-black uppercase text-primary"
+                >
+                  Test Voice
                 </button>
                 <label className="block text-xs font-bold text-gray-600 dark:text-gray-300">
                   Speed {voiceSettings.rate.toFixed(2)}
@@ -292,41 +301,24 @@ function MessageBubble({ message, voiceSettings }: { message: ChatMessage; voice
 
   const speakText = async (text: string) => {
     try {
-      await invoke('speak_text_native', {
+      await speakWithBestEngine({
         text: text || 'Nothing to speak.',
         language: voiceSettings.language,
         rate: voiceSettings.rate,
+        pitch: voiceSettings.pitch,
       })
       setIsSpeaking(false)
       return
     } catch (error) {
-      console.warn('Native Windows speech failed; falling back to Web Speech.', error)
+      console.warn('Speech failed.', error)
+      setIsSpeaking(false)
     }
-
-    const synth = window.speechSynthesis
-    const utterance = new SpeechSynthesisUtterance(text || 'Nothing to speak.')
-    utterance.lang = voiceSettings.language
-    utterance.rate = voiceSettings.rate
-    utterance.pitch = voiceSettings.pitch
-    const voices = synth.getVoices()
-    utterance.voice = voices.find((voice) => voice.lang === voiceSettings.language)
-      || voices.find((voice) => isTamilSpeech(voiceSettings.language) && (voice.lang.toLowerCase().startsWith('ta') || voice.name.toLowerCase().includes('tamil')))
-      || voices.find((voice) => voice.lang.toLowerCase().startsWith(voiceSettings.language.split('-')[0].toLowerCase()))
-      || null
-    const done = () => setIsSpeaking(false)
-    utterance.onend = done
-    utterance.onerror = done
-    synth.cancel()
-    synth.speak(utterance)
-    synth.resume()
-    window.setTimeout(() => synth.resume(), 250)
-    window.setTimeout(() => setIsSpeaking(false), Math.max(8000, Math.min(text.length * 90, 45000)))
   }
 
   const speakMessage = async () => {
     if (!voiceSettings.enabled || !('speechSynthesis' in window)) return
     if (isSpeaking) {
-      window.speechSynthesis.cancel()
+      stopSpeaking()
       setIsSpeaking(false)
       return
     }

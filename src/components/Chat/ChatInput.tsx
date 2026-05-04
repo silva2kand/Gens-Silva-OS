@@ -3,6 +3,7 @@ import { useAppStore, useChatStore, useConnectorsStore, useModelsStore } from '@
 import { cn, generateId } from '@/lib/utils'
 import { executeAssistantTools, queueCompletionNotification, type AssistantToolMode } from '@/lib/assistant-tools'
 import { appendFollowUpSuggestions, fixTamilOutput, isSafeForVoice, isTamilSpeech, loadVoiceSettings, splitDisplayChunks, splitVoiceChunks, voiceLanguageLabels } from '@/lib/response-enhancements'
+import { speakChunksSequentially, stopSpeaking } from '@/lib/speech-playback'
 import { invoke } from '@tauri-apps/api/core'
 import { listen } from '@tauri-apps/api/event'
 import {
@@ -234,7 +235,7 @@ export default function ChatInput() {
 
   const stopSpeech = () => {
     speechCancelRef.current = true
-    window.speechSynthesis?.cancel()
+    stopSpeaking()
   }
 
   const speakQueuedChunks = async (text: string, settings = loadVoiceSettings()) => {
@@ -242,25 +243,7 @@ export default function ChatInput() {
     if (!isSafeForVoice(text, settings.autoReadAgentResults)) return
     speechQueueRef.current = speechQueueRef.current.then(async () => {
       const chunks = splitVoiceChunks(text, settings)
-      for (const chunk of chunks) {
-        if (speechCancelRef.current) break
-        try {
-          await invoke('speak_text_native', { text: chunk, language: settings.language, rate: settings.rate })
-        } catch {
-          if (!('speechSynthesis' in window)) continue
-          await new Promise<void>((resolve) => {
-            const utterance = new SpeechSynthesisUtterance(chunk)
-            utterance.lang = settings.language
-            utterance.rate = settings.rate
-            utterance.pitch = settings.pitch
-            utterance.onend = () => resolve()
-            utterance.onerror = () => resolve()
-            window.speechSynthesis.cancel()
-            window.speechSynthesis.speak(utterance)
-            window.speechSynthesis.resume()
-          })
-        }
-      }
+      await speakChunksSequentially(chunks, settings, () => speechCancelRef.current)
     })
     return speechQueueRef.current
   }
