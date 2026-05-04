@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Testing
+coverage/
+
+# Production
+build/
+dist/
+models/
+public/memory/
+
+# Misc
+.DS_Store
+*.log
+
+# Tauri
+src-tauri/target/
+src-tauri/bindings/
+src-tauri/bin/
+*.gguf
+*.safetensors
+*.onnx

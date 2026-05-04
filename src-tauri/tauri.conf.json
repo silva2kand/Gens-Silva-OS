@@ -1,0 +1,32 @@
+{
+  "productName": "genz-silva-os",
+  "version": "0.1.0",
+  "identifier": "com.genzsilva.os",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [{
+      "title": "genz-silva-os",
+      "width": 1400,
+      "height": 900,
+      "minWidth": 1000,
+      "minHeight": 700,
+      "resizable": true,
+      "fullscreen": false,
+      "center": true
+    }]
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "downloadBootstrapper"
+      }
+    }
+  }
+}
